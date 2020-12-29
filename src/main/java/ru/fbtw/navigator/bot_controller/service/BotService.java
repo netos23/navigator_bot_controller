@@ -11,13 +11,10 @@ import okhttp3.Request;
 import okhttp3.ResponseBody;
 import org.apache.commons.io.FileUtils;
 import org.springframework.stereotype.Component;
-import org.springframework.stereotype.Service;
-import ru.fbtw.navigator.bot_controller.domain.Project;
-import ru.fbtw.navigator.bot_controller.domain.Slot;
-import ru.fbtw.navigator.bot_controller.domain.TelegramBot;
-import ru.fbtw.navigator.bot_controller.domain.TelegramServer;
+import ru.fbtw.navigator.bot_controller.domain.*;
 import ru.fbtw.navigator.bot_controller.exseption.TelegramBotCreateException;
 import ru.fbtw.navigator.bot_controller.exseption.TelegramBotException;
+import ru.fbtw.navigator.bot_controller.repository.SlotsRepo;
 import ru.fbtw.navigator.bot_controller.repository.TelegramBotRepo;
 import ru.fbtw.navigator.bot_controller.repository.TelegramServerRepo;
 import ru.fbtw.navigator.bot_controller.response.TelegramWebHookResponse;
@@ -34,13 +31,15 @@ import java.util.*;
 @Component
 public class BotService {
 	private static final String WEB_HOOK_URL = "https://api.telegram.org/bot%s/setWebHook?url=%s";
+	private static final String DEL_URL = "https://api.telegram.org/bot%s/deleteWebhook?drop_pending_updates=True";
 
-	File botJar;
+	File botTemplates;
 	String propertiesFormat;
 
 	ProjectService projectService;
 	TelegramBotRepo botRepo;
 	TelegramServer server;
+	SlotsRepo slotsRepo;
 	TelegramServerRepo serverRepo;
 
 	Map<Long, Process> processMap;
@@ -52,8 +51,10 @@ public class BotService {
 			ProjectService projectService,
 			TelegramBotRepo botRepo,
 			TelegramServer server,
+			SlotsRepo slotsRepo,
 			TelegramServerRepo serverRepo
 	) throws IOException {
+		this.slotsRepo = slotsRepo;
 		log.info("Creating bot service");
 		this.projectService = projectService;
 		this.botRepo = botRepo;
@@ -63,13 +64,13 @@ public class BotService {
 		client = new OkHttpClient().newBuilder()
 				.build();
 
-		botJar = new File("template/tg_bot.jar");
+		botTemplates = new File("template");
 		//botJar = new File("template/invoke_tester.jar");
-		if (!botJar.exists()) {
+		if (!botTemplates.exists()) {
 			throw new FileNotFoundException("Missing parent bot");
 		}
 
-		File propertiesFile = new File("template/application.properties.template");
+		File propertiesFile = new File("application.properties.template");
 		if (!propertiesFile.exists()) {
 			throw new FileNotFoundException("Missing parent bot");
 		}
@@ -85,41 +86,40 @@ public class BotService {
 		if (slot != null) {
 			copyFiles(project, json, slot);
 			startBot(project.getId());
-			registerBot(project, slot.getUrl());
+			registerBot(project,slot);
+			slotsRepo.delete(slot);
 			setWebhook(project, slot);
 		}
 	}
 
-	private void registerBot(Project project, String url) {
+	private void registerBot(Project project, Slot slot) {
 		log.info("Register bot  for project id: {}", project.getId());
+		projectService.activatePlatform(project,Platform.TG_BOT);
+
 		TelegramBot telegramBot = new TelegramBot();
 		telegramBot.setServer(server);
-		telegramBot.setUrl(url);
+		telegramBot.setUrl(slot.getUrl());
+		telegramBot.setPort(slot.getPort());
 		telegramBot.setProject(project);
 
 		botRepo.save(telegramBot);
+
 	}
 
 	private void setWebhook(Project project, Slot slot) throws IOException, NullPointerException, TelegramBotCreateException {
 		log.info("Setting webhook for project id: {}", project.getId());
 		String url = String.format(WEB_HOOK_URL, project.getTelegramApiKey(), slot.getUrl());
 
-		Request request = new Request.Builder()
-				.url(url)
-				.method("GET", null)
-				.build();
-
-		ResponseBody body = client.newCall(request)
-				.execute()
-				.body();
+		ResponseBody body = getResponseBody(url);
 
 		TelegramWebHookResponse response = new Gson().fromJson(body.string(), TelegramWebHookResponse.class);
 
 		if (response.isOk() && response.isResult()) {
 			log.info("message: {} for project id: {}", response.getDescription(), project.getId());
+
 		} else {
 			log.error("message: {} for project id: {}", response.getDescription(), project.getId());
-			closePlatform();
+			remove(project.getId());
 			throw new TelegramBotCreateException("Web hook wasn't set");
 		}
 	}
@@ -130,10 +130,11 @@ public class BotService {
 		File root = new File(projectId.toString());
 
 		if (!root.exists() && root.mkdir()) {
-
-			File app = new File(root.getAbsolutePath() + "/tg_bot.jar");
-			//File app = new File(root.getAbsolutePath() + "/invoke_tester.jar");
-			FileUtils.copyFile(botJar, app);
+			File[] src = Objects.requireNonNull(botTemplates.listFiles());
+			for (File file : src) {
+				File app = new File(root.getAbsolutePath() + "/" + file.getName());
+				FileUtils.copyFile(file, app);
+			}
 
 			File propertiesFile = new File(root.getAbsolutePath() + "/application.properties");
 			FileUtils.write(propertiesFile, getProperties(project, slot), StandardCharsets.UTF_8);
@@ -143,7 +144,7 @@ public class BotService {
 
 		} else {
 			log.error("Directory exist for project{}", projectId);
-			closePlatform();
+			removeFiles(projectId);
 			throw new TelegramBotCreateException("Project folder for this id, exist");
 		}
 	}
@@ -160,14 +161,13 @@ public class BotService {
 
 	private Slot nextSlot() throws NoSuchElementException {
 		// get actual slots list in current server
-		Iterable<Slot> slots = serverRepo.findById(server.getName())
-				.get()
-				.getSlots();
-		Iterator<Slot> slotIterator = slots.iterator();
+		Iterable<Slot> slots = slotsRepo.findAllByServer(server);
+		Iterator<Slot> slotIterator;
 
-		if (slotIterator.hasNext()) {
+		if (slots != null && (slotIterator = slots.iterator()).hasNext()) {
 			Slot slot = slotIterator.next();
 			slotIterator.remove();
+
 			return slot;
 		} else {
 			log.info("Slots are empty");
@@ -177,8 +177,10 @@ public class BotService {
 
 	private void startBot(Long projectId) throws IOException {
 		log.info("Starting bot");
-		String pathname = projectId + "/tg_bot.jar";
-		ProcessBuilder processBuilder = new ProcessBuilder("java", "-jar", pathname);
+		File dir = new File(projectId.toString());
+		ProcessBuilder processBuilder = new ProcessBuilder("java", "-jar", "tg_bot.jar")
+				.directory(dir)
+				.redirectOutput(new File("logs/"+projectId.toString() + "app.log"));
 		Process process = processBuilder.start();
 
 		processMap.put(projectId, process);
@@ -202,24 +204,81 @@ public class BotService {
 				.getAsLong();
 	}
 
-	public void remove(String json) {
+
+	public void remove(String json) throws IOException, TelegramBotCreateException {
 		Long id = getIdFromJson(json);
 		// todo: дописать
+		remove(id);
+	}
+
+	private void remove(Long id) throws IOException, TelegramBotCreateException {
 		Process process = processMap.get(id);
 		if (process != null) {
 			process.destroy();
 		}
 
 		removeFiles(id);
-		closePlatform();
+		closePlatform(id);
 	}
 
-	private boolean removeFiles(Long id) {
+	private void removeFiles(Long id) throws IOException {
+		log.info("Removing files for id: {}", id);
 		File root = new File(id.toString());
-		return root.delete();
+		for(File file : root.listFiles()){
+			FileUtils.forceDelete(file);
+		}
+		FileUtils.forceDelete(root);
 	}
 
-	private void closePlatform() {
-		//todo clear db, statistic & etc
+	private void closePlatform(Long id) throws IOException, TelegramBotCreateException, NoSuchElementException {
+		log.info("Closing platform for id: {}", id);
+		Project project = projectService.getProjectById(id).get();
+
+		try {
+
+			TelegramBot bot = botRepo.findByProjectId(id);
+			botRepo.delete(bot);
+
+			Slot slot = new Slot();
+			slot.setServer(server);
+			slot.setUrl(bot.getUrl());
+			slot.setPort(bot.getPort());
+			slotsRepo.save(slot);
+
+			projectService.removePlatform(project, Platform.TG_BOT);
+
+			removeWebHook(project);
+		}catch (Exception ex){
+			log.error("Error while deleting");
+			ex.printStackTrace();
+		}
+	}
+
+	private void removeWebHook(Project project) throws IOException, TelegramBotCreateException {
+		log.info("Deleting webhook for project id: {}", project.getId());
+		String url = String.format(DEL_URL, project.getTelegramApiKey());
+
+		ResponseBody body = getResponseBody(url);
+
+		TelegramWebHookResponse response = new Gson().fromJson(body.string(), TelegramWebHookResponse.class);
+
+		if (response.isOk() && response.isResult()) {
+			log.info("message: {} for project id: {}", response.getDescription(), project.getId());
+
+		} else {
+			log.error("message: {} for project id: {}", response.getDescription(), project.getId());
+			throw new TelegramBotCreateException("Web hook wasn't deleted");
+		}
+	}
+
+	private ResponseBody getResponseBody(String url) throws IOException {
+		Request request = new Request.Builder()
+				.url(url)
+				.method("GET", null)
+				.build();
+
+		return client.newCall(request)
+				.execute()
+				.body();
 	}
 }

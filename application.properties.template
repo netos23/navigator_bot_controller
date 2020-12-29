@@ -1,0 +1,7 @@
+server.port=%s
+localeTag=ru-RU
+telegrambot.botUserName=%s
+telegrambot.botToken=%s
+telegrambot.webHookPath=%s
+logging.file=C:\Users\nikmo\IdeaProjects\navigator\bot_controller\29\app.log
+

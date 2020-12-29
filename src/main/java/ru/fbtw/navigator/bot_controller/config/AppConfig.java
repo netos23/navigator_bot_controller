@@ -43,6 +43,7 @@ public class AppConfig {
 		currentServer.setName(name);
 		currentServer.setUrl(url);
 
+		clearSlots(currentServer,slotsRepo);
 		List<Slot> slots = getSlots(currentServer);
 		currentServer.setEmptySlotsCount(slots.size());
 
@@ -69,5 +70,11 @@ public class AppConfig {
 			slots.add(slot);
 		}
 		return slots;
+	}
+
+	private void clearSlots(TelegramServer server, SlotsRepo slotsRepo){
+		Iterable<Slot> serverSlots = slotsRepo.findAllByServer(server);
+
+		slotsRepo.deleteAll(serverSlots);
 	}
 }

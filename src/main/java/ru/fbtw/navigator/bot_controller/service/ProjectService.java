@@ -66,6 +66,7 @@ public class ProjectService {
 			Project newProject = oldProject.get();
 
 			newProject.setName(project.getName());
+			updatePlatforms(newProject, project);
 			newProject.setPlatforms(project.getPlatforms());
 
 			newProject.setTelegramApiKey(project.getTelegramApiKey());
@@ -75,7 +76,6 @@ public class ProjectService {
 			newProject.setUserPackage(project.getUserPackage());
 
 			newProject.setBody(project.getBody());
-			updatePlatforms(newProject, project);
 
 			projectRepo.save(newProject);
 			return true;
@@ -86,19 +86,19 @@ public class ProjectService {
 
 	private void initPlatforms(Project project) {
 		for (Platform platform : project.getPlatforms()) {
-			ExecutedProject executedProject = initPlatform(project, platform);
-			platformsRepo.save(executedProject);
+			initPlatform(project, platform);
 		}
 	}
 
 
-	private ExecutedProject initPlatform(Project project, Platform platform) {
+	private void initPlatform(Project project, Platform platform) {
 		ExecutedProject executedProject = new ExecutedProject();
 
 		executedProject.setProject(project);
 		executedProject.setActive(false);
 		executedProject.setPlatforms(platform);
-		return executedProject;
+
+		platformsRepo.save(executedProject);
 	}
 
 	public void updatePlatforms(Project old, Project cur) {
@@ -110,7 +110,8 @@ public class ProjectService {
 		}
 
 		for (Platform platform : cur.getPlatforms()) {
-			if (!old.getPlatforms().contains(platform)) {
+			if (!(old.getPlatforms().contains(platform)
+					 && isPlatformInited(old,platform))) {
 				invokePlatform(old, platform);
 			}
 		}
@@ -129,7 +130,7 @@ public class ProjectService {
 		}
 	}
 
-	private void invokePlatform(Project project, Platform platform) {
+	protected void invokePlatform(Project project, Platform platform) {
 		Optional<ExecutedProject> executedProjectOptional = platformsRepo.findByProjectAndPlatforms(project, platform);
 		if (executedProjectOptional.isPresent()) {
 			log.error("Platform: {}, exist for project: {}", platform, project);
@@ -139,7 +140,7 @@ public class ProjectService {
 		}
 	}
 
-	private void removePlatform(Project project, Platform platform) {
+	public void removePlatform(Project project, Platform platform) {
 		Optional<ExecutedProject> executedProjectOptional = platformsRepo.findByProjectAndPlatforms(project, platform);
 		if (executedProjectOptional.isPresent()) {
 			platformsRepo.delete(executedProjectOptional.get());
@@ -150,12 +151,18 @@ public class ProjectService {
 		}
 	}
 
-	public boolean isPlatformInited(Project project, Platform platform) {
-		Set<ExecutedProject> platforms = platformsRepo.findAllByProject(project);
-		Optional<ExecutedProject> executedProject = platforms.stream()
-				.filter(proj -> proj.getPlatforms().equals(platform))
-				.findFirst();
+	public boolean isPlatformExecuted(Project project, Platform platform) {
+		Optional<ExecutedProject> executedProject
+				= platformsRepo.findByProjectAndPlatforms(project, platform);
+
 		return executedProject.isPresent() && executedProject.get().getActive();
+
+	}
+	public boolean isPlatformInited(Project project, Platform platform) {
+		Optional<ExecutedProject> executedProject
+				= platformsRepo.findByProjectAndPlatforms(project, platform);
+
+		return executedProject.isPresent();
 
 	}
 

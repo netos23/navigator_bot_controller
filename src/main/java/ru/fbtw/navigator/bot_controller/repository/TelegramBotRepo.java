@@ -8,4 +8,5 @@ import ru.fbtw.navigator.bot_controller.domain.TelegramBot;
 @Repository
 public interface TelegramBotRepo extends CrudRepository<TelegramBot,Long> {
 	TelegramBot findByProject(Project project);
+	TelegramBot findByProjectId(Long id);
 }

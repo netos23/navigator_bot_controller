@@ -20,6 +20,7 @@ public class TelegramBot {
 	@JoinColumn(name = "project_id")
 	Project project;
 	String url;
+	Integer port;
 
 	@ManyToOne(fetch = FetchType.EAGER)
 	@JoinColumn(name = "telegramserver_name")
